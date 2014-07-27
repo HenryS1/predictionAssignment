@@ -1,0 +1,144 @@
+Predicting activity quality
+========================================================
+
+## Summary
+
+There was a high correlation between measurements from the sensors, so principal component analysis was used to remove redundant variables.
+
+The first two principal components provide a good separation of the measurements by the participant, so dummy variables based on a participant's name were not used.
+
+Using a random forest model trained on twelve principal components gave an out of bag error estimate of 2.7%. The random forest was trained on 80% of the data leaving 20% of the data as a test set. The classification accuracy on the test set was 97.2%, giving an error rate of 2.8% which is consistent with the out of bag error rate.
+
+## Preprocessing
+
+Blanks and the string 'NA' were treated as NA values. Columns which contained more than 50% NA values were excluded, because imputation didn't seem practical.
+
+```{r}
+library(caret)
+library(randomForest)
+exerciseData <- read.csv('pml-training.csv',header=TRUE,na.strings="")
+set.seed(9283)
+
+cleanNAs <- function(df) {
+
+    df[df == 'NA'] <- NA
+    if (sum(df == 'NA',na.rm=TRUE)) print("Error cleaning NA values")
+    trDims    <- dim.data.frame(df)
+    naCounts  <- colSums(is.na(df))
+    tooManyNA <- naCounts > 0.5 * trDims[1]
+    df <- df[,!tooManyNA]
+    
+}
+
+exerciseData <- cleanNAs(exerciseData)
+```
+
+```{r echo=FALSE}
+exerciseTestData <- read.csv('pml-testing.csv',header=TRUE,na.strings="")
+exerciseTestData <- cleanNAs(exerciseTestData)
+```
+The data were partitioned into a training set with 80% of data and a testing set with 20% of data.
+
+```{r}
+inTrain  <- createDataPartition(exerciseData$classe,p=0.8)[[1]]
+training <- exerciseData[inTrain,]
+testing  <- exerciseData[-inTrain,]
+```
+
+The most relevant data for prediction seemed to be the numerical data captured by the sensors, because they were the direct result of the motion being classified. 
+
+```{r}
+isNumeric <- function(colName) {    
+    cl <- class(exerciseData[colName][,1])
+    cl == 'numeric' || cl == 'integer'
+}
+numCols      <- sapply(names(exerciseData),isNumeric)
+```
+
+The data were scaled and centered to make them more comparable and suited for a learning algorithm.
+
+```{r}
+scaleCent    <- preProcess(training[,numCols],method=c("center","scale"))
+trainNumCols <- predict(scaleCent,training[,numCols])
+testNumCols  <- predict(scaleCent,testing[,numCols])
+```
+
+```{r echo=FALSE}
+finalTestNumCols <- predict(scaleCent,exerciseTestData[,numCols])
+```
+
+Numerical data gathered from the same sensor were highly correlated.
+
+```{r}
+M <- abs(cor(trainNumCols))
+diag(M) <- 0
+which(M > 0.8,arr.ind=T)
+```
+
+Principal component analysis was used to reduce the number of numerical variables from 56 to 12. This number of principal components was decided on after training multiple random forest models, increasing the number of principal components until the decrease in out of bag error became negligible.
+
+```{r}
+prinCom <- preProcess(trainNumCols,method='pca',pcaComp=12)
+trainPC <- simplify2array(predict(prinCom,trainNumCols))
+testPC  <- simplify2array(predict(prinCom,testNumCols))
+```
+
+```{r}
+finalTestPC <- simplify2array(predict(prinCom,finalTestNumCols))
+```
+
+The first two principal components gave a very good separation of the data by user_name. Because of this, dummy variables based on user_name were not included in the model.
+
+```{r fig.width=7, fig.height=6}
+qplot(trainPC[,1],trainPC[,2],colour=training$user_name)
+```
+
+## Results
+
+A random forest model was trained using the randomForest package, which was much faster to train than the rf method in the caret package. The model was trained to predict the classe variable from the first 12 principal components.
+
+```{r}
+trd <- as.data.frame(trainPC)
+trd$classe <- training$classe
+
+classeModel <- randomForest(classe ~ PC1
+                                    +PC2
+                                    +PC3
+                                    +PC4
+                                    +PC5
+                                    +PC6
+                                    +PC7
+                                    +PC8
+                                    +PC9
+                                    +PC10
+                                    +PC11
+                                    +PC12
+                                ,data=trd)
+```
+
+The out of bag error calculated by the random forest algorithm was 2.7%.
+
+```{r}
+print(classeModel)
+```
+
+This agreed with the error rate of 2.8% calculated on the test data.
+
+```{r}
+td <- data.frame(testPC)
+
+testPredictions <- predict(classeModel,newdata=td)
+accuracy <- sum(testPredictions == testing$classe)/length(testing$classe)
+accuracy
+1-accuracy
+```
+
+```{r echo=FALSE}
+ftd <- data.frame(finalTestPC)
+finalTestPredictions <- predict(classeModel,newdata=ftd)
+#finalTestPredictions
+```
+
+## Conclusion
+
+Based on the out of bag error rate reported by the model and the error rate calculated on the test set, the anticipated out of sample error rate for this model is between 2.7% and 2.8%.
